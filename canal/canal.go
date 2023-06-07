@@ -25,6 +25,21 @@ import (
 
 // Canal can sync your MySQL data into everywhere, like Elasticsearch, Redis, etc...
 // MySQL must open row format for binlog
+
+var (
+	_tableMetaData = make(map[string]*schema.Table)
+	tableLock      sync.RWMutex
+)
+
+func buildCacheKey(schema string, table string) string {
+	//如果是mamba_rent的库
+	if strings.Contains(schema, "mamba_rent") {
+		schema = "mamba"
+	}
+	//key 的列子 mamba:t_sale_bill:26
+	return strings.ToLower(fmt.Sprintf("%s:%s", schema, table))
+}
+
 type Canal struct {
 	m sync.Mutex
 
@@ -42,8 +57,8 @@ type Canal struct {
 	connLock sync.Mutex
 	conn     *client.Conn
 
-	tableLock          sync.RWMutex
-	tables             map[string]*schema.Table
+	//tableLock sync.RWMutex
+	//tables             map[string]*schema.Table
 	errorTablesGetTime map[string]time.Time
 
 	tableMatchCache   map[string]bool
@@ -77,7 +92,6 @@ func NewCanal(cfg *Config) (*Canal, error) {
 	c.dumpDoneCh = make(chan struct{})
 	c.eventHandler = &DummyEventHandler{}
 	c.parser = parser.New()
-	c.tables = make(map[string]*schema.Table)
 	if c.cfg.DiscardNoMetaRowEvent {
 		c.errorTablesGetTime = make(map[string]time.Time)
 	}
@@ -275,9 +289,9 @@ func (c *Canal) checkTableMatch(key string) bool {
 		return true
 	}
 
-	c.tableLock.RLock()
+	tableLock.RLock()
 	rst, ok := c.tableMatchCache[key]
-	c.tableLock.RUnlock()
+	tableLock.RUnlock()
 	if ok {
 		// cache hit
 		return rst
@@ -301,30 +315,38 @@ func (c *Canal) checkTableMatch(key string) bool {
 			}
 		}
 	}
-	c.tableLock.Lock()
+	tableLock.Lock()
 	c.tableMatchCache[key] = matchFlag
-	c.tableLock.Unlock()
+	tableLock.Unlock()
 	return matchFlag
 }
 
+func (c *Canal) GetSimpleTable(db string, table string) (*schema.Table, error) {
+	return schema.NewTable(c, db, table)
+}
+
 func (c *Canal) GetTable(db string, table string) (*schema.Table, error) {
-	key := fmt.Sprintf("%s.%s", db, table)
 	// if table is excluded, return error and skip parsing event or dump
+	key := fmt.Sprintf("%s.%s", db, table)
 	if !c.checkTableMatch(key) {
 		return nil, ErrExcludedTable
 	}
-	c.tableLock.RLock()
-	t, ok := c.tables[key]
-	c.tableLock.RUnlock()
+	key = buildCacheKey(db, table)
+	tableLock.RLock()
+	t, ok := _tableMetaData[key]
+	if ok {
+		t.Schema = db
+	}
+	tableLock.RUnlock()
 
 	if ok {
 		return t, nil
 	}
 
 	if c.cfg.DiscardNoMetaRowEvent {
-		c.tableLock.RLock()
+		tableLock.RLock()
 		lastTime, ok := c.errorTablesGetTime[key]
-		c.tableLock.RUnlock()
+		tableLock.RUnlock()
 		if ok && time.Since(lastTime) < UnknownTableRetryPeriod {
 			return nil, schema.ErrMissingTableMeta
 		}
@@ -351,16 +373,16 @@ func (c *Canal) GetTable(db string, table string) (*schema.Table, error) {
 			}
 			ta.AddColumn("id", "bigint(20)", "", "")
 			ta.AddColumn("type", "char(1)", "", "")
-			c.tableLock.Lock()
-			c.tables[key] = ta
-			c.tableLock.Unlock()
+			tableLock.Lock()
+			_tableMetaData[key] = ta
+			tableLock.Unlock()
 			return ta, nil
 		}
 		// if DiscardNoMetaRowEvent is true, we just log this error
 		if c.cfg.DiscardNoMetaRowEvent {
-			c.tableLock.Lock()
+			tableLock.Lock()
 			c.errorTablesGetTime[key] = time.Now()
-			c.tableLock.Unlock()
+			tableLock.Unlock()
 			// log error and return ErrMissingTableMeta
 			c.cfg.Logger.Errorf("canal get table meta err: %v", errors.Trace(err))
 			return nil, schema.ErrMissingTableMeta
@@ -368,38 +390,38 @@ func (c *Canal) GetTable(db string, table string) (*schema.Table, error) {
 		return nil, err
 	}
 
-	c.tableLock.Lock()
-	c.tables[key] = t
+	tableLock.Lock()
+	_tableMetaData[key] = t
 	if c.cfg.DiscardNoMetaRowEvent {
 		// if get table info success, delete this key from errorTablesGetTime
 		delete(c.errorTablesGetTime, key)
 	}
-	c.tableLock.Unlock()
-
+	t.Schema = db
+	tableLock.Unlock()
 	return t, nil
 }
 
 // ClearTableCache clear table cache
 func (c *Canal) ClearTableCache(db []byte, table []byte) {
-	key := fmt.Sprintf("%s.%s", db, table)
-	c.tableLock.Lock()
-	delete(c.tables, key)
+	key := buildCacheKey(string(db), string(table))
+	tableLock.Lock()
+	delete(_tableMetaData, key)
 	if c.cfg.DiscardNoMetaRowEvent {
 		delete(c.errorTablesGetTime, key)
 	}
-	c.tableLock.Unlock()
+	tableLock.Unlock()
 }
 
 // SetTableCache sets table cache value for the given table
 func (c *Canal) SetTableCache(db []byte, table []byte, schema *schema.Table) {
-	key := fmt.Sprintf("%s.%s", db, table)
-	c.tableLock.Lock()
-	c.tables[key] = schema
+	key := buildCacheKey(string(db), string(table))
+	tableLock.Lock()
+	_tableMetaData[key] = schema
 	if c.cfg.DiscardNoMetaRowEvent {
 		// if get table info success, delete this key from errorTablesGetTime
 		delete(c.errorTablesGetTime, key)
 	}
-	c.tableLock.Unlock()
+	tableLock.Unlock()
 }
 
 // CheckBinlogRowImage checks MySQL binlog row image, must be in FULL, MINIMAL, NOBLOB
