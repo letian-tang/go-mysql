@@ -50,20 +50,20 @@ func (s *localBinFileAdapterStreamer) GetEvent(ctx context.Context) (*replicatio
 		return ev, err
 	}
 
-	//if err == replication.ErrNeedSyncAgain { // restart master if last sync master syncer has error
-	//	s.canal.syncer.Close()
-	//	_ = s.canal.prepareSyncer()
-	//
-	//	newStreamer, startErr := s.canal.startSyncer()
-	//	if startErr != nil {
-	//		return nil, startErr
-	//	}
-	//	// set all streamer to the new sync master streamer
-	//	s.BinlogStreamer = newStreamer
-	//	s.syncMasterStreamer = newStreamer
-	//
-	//	ev, err = newStreamer.GetEvent(ctx)
-	//}
+	if err == replication.ErrNeedSyncAgain { // restart master if last sync master syncer has error
+		s.canal.syncer.Close()
+		_ = s.canal.prepareSyncer()
+
+		newStreamer, startErr := s.canal.startSyncer()
+		if startErr != nil {
+			return nil, startErr
+		}
+		// set all streamer to the new sync master streamer
+		s.BinlogStreamer = newStreamer
+		s.syncMasterStreamer = newStreamer
+
+		ev, err = newStreamer.GetEvent(ctx)
+	}
 
 	mysqlErr, ok := err.(*mysql.MyError)
 	// only 'Could not find first log' can create local streamer, ignore other errors
