@@ -905,3 +905,7 @@ func (b *BinlogSyncer) killConnection(conn *client.Conn, id uint32) {
 	}
 	b.cfg.Logger.Infof("kill last connection id %d", id)
 }
+
+func (b *BinlogSyncer) GetBinlogParser() *BinlogParser {
+	return b.parser
+}

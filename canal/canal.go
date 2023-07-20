@@ -67,8 +67,9 @@ type Canal struct {
 
 	delay *uint32
 
-	ctx    context.Context
-	cancel context.CancelFunc
+	ctx               context.Context
+	cancel            context.CancelFunc
+	binFileDownloader BinlogFileDownloader
 }
 
 // canal will retry fetching unknown table's meta after UnknownTableRetryPeriod
