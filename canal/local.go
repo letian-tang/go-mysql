@@ -75,12 +75,15 @@ func (s *localBinFileAdapterStreamer) newLocalBinFileStreamer(download BinlogFil
 		return streamer
 	}
 	go func(binFilePath string, streamer *replication.BinlogStreamer) {
-		err := s.canal.syncer.GetBinlogParser().ParseFile(binFilePath, 0, func(be *replication.BinlogEvent) error {
-			var err2 error
-			if be.Header.LogPos == position.Pos {
-				err2 = streamer.AddEventToStreamer(be)
+		isBegin := false
+		err := s.canal.syncer.GetBinlogParser().ParseFile(binFilePath, 0, func(ev *replication.BinlogEvent) error {
+			if ev.Header.LogPos == position.Pos {
+				isBegin = true
 			}
-			return err2
+			if isBegin {
+				return streamer.AddEventToStreamer(ev)
+			}
+			return nil
 		})
 		if err != nil {
 			streamer.CloseWithError(err)
