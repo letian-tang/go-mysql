@@ -2,7 +2,7 @@ package canal
 
 import (
 	"context"
-
+	errors2 "errors"
 	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/go-mysql-org/go-mysql/replication"
 	"github.com/pingcap/errors"
@@ -50,7 +50,7 @@ func (s *localBinFileAdapterStreamer) GetEvent(ctx context.Context) (*replicatio
 		return ev, err
 	}
 
-	if err == replication.ErrNeedSyncAgain { // restart master if last sync master syncer has error
+	if errors2.Is(err, replication.ErrNeedSyncAgain) { // restart master if last sync master syncer has error
 		s.canal.syncer.Close()
 		_ = s.canal.prepareSyncer()
 
