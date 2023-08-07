@@ -693,6 +693,7 @@ func (b *BinlogSyncer) prepareSyncPos(pos Position) error {
 	// 主备切换
 	if b.Failover {
 		masterPos, err := b.getMasterPos()
+		masterPos.Pos = 4
 		if err != nil {
 			pos = masterPos
 		}
