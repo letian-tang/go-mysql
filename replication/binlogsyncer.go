@@ -694,7 +694,11 @@ func (b *BinlogSyncer) prepareSyncPos(pos Position) error {
 	if b.Failover {
 		masterPos, err := b.getMasterPos()
 		masterPos.Pos = 4
+		// 获取到pos
 		if err != nil {
+			b.cfg.Logger.Errorf("getMasterPos err=%v", err)
+		} else {
+			b.cfg.Logger.Infof("start new MasterPos=%v", masterPos)
 			pos = masterPos
 		}
 		//重置
