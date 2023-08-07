@@ -151,6 +151,10 @@ type BinlogSyncer struct {
 	lastConnectionID uint32
 
 	retryCount int
+
+	ServerId int64
+
+	Failover bool
 }
 
 // NewBinlogSyncer creates the BinlogSyncer with cfg.
@@ -312,6 +316,24 @@ func (b *BinlogSyncer) registerSlave() error {
 		}
 	}
 
+	// 当前的serviceId
+	if r, err := b.c.Execute("SHOW VARIABLES LIKE 'server_id'"); err != nil {
+		return errors.Trace(err)
+	} else {
+		serviceId, _ := r.GetInt(0, 1)
+		// 启动或重启
+		if b.ServerId == 0 {
+			b.ServerId = serviceId
+		}
+		// 主备切换
+		if b.ServerId != serviceId {
+			b.cfg.Logger.Infof("Master-slave failover in MySQL host:%s from %d to %d", b.cfg.Host, b.ServerId, serviceId)
+			b.ServerId = serviceId
+			b.Failover = true
+		}
+
+	}
+
 	if b.cfg.Flavor == MariaDBFlavor {
 		// Refer https://github.com/alibaba/canal/wiki/BinlogChange(MariaDB5&10)
 		// Tell the server that we understand GTIDs by setting our slave capability
@@ -348,6 +370,18 @@ func (b *BinlogSyncer) registerSlave() error {
 	}
 
 	return nil
+}
+
+func (b *BinlogSyncer) getMasterPos() (Position, error) {
+	rr, err := b.c.Execute("SHOW MASTER STATUS")
+	if err != nil {
+		return Position{}, errors.Trace(err)
+	}
+
+	name, _ := rr.GetString(0, 0)
+	pos, _ := rr.GetInt(0, 1)
+
+	return Position{Name: name, Pos: uint32(pos)}, nil
 }
 
 func (b *BinlogSyncer) enableSemiSync() error {
@@ -654,6 +688,16 @@ func (b *BinlogSyncer) prepareSyncPos(pos Position) error {
 
 	if err := b.prepare(); err != nil {
 		return errors.Trace(err)
+	}
+
+	// 主备切换
+	if b.Failover {
+		masterPos, err := b.getMasterPos()
+		if err != nil {
+			pos = masterPos
+		}
+		//重置
+		b.Failover = false
 	}
 
 	if err := b.writeBinlogDumpCommand(pos); err != nil {
