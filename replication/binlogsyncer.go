@@ -155,6 +155,8 @@ type BinlogSyncer struct {
 	ServerId int64
 
 	Failover bool
+
+	FailoverTime *time.Time
 }
 
 // NewBinlogSyncer creates the BinlogSyncer with cfg.
@@ -330,6 +332,8 @@ func (b *BinlogSyncer) registerSlave() error {
 			b.cfg.Logger.Infof("Master-slave failover in MySQL host:%s from %d to %d", b.cfg.Host, b.ServerId, serviceId)
 			b.ServerId = serviceId
 			b.Failover = true
+			now := time.Now()
+			b.FailoverTime = &now
 		}
 
 	}
@@ -701,8 +705,6 @@ func (b *BinlogSyncer) prepareSyncPos(pos Position) error {
 			b.cfg.Logger.Infof("start new MasterPos=%v", masterPos)
 			pos = masterPos
 		}
-		//重置
-		b.Failover = false
 	}
 
 	if err := b.writeBinlogDumpCommand(pos); err != nil {
@@ -710,6 +712,12 @@ func (b *BinlogSyncer) prepareSyncPos(pos Position) error {
 	}
 
 	return nil
+}
+
+func (b *BinlogSyncer) FailOverFinish() {
+	//重置
+	b.Failover = false
+	b.FailoverTime = nil
 }
 
 func (b *BinlogSyncer) prepareSyncGTID(gset GTIDSet) error {

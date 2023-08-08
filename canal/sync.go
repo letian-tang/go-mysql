@@ -79,6 +79,20 @@ func (c *Canal) runSyncBinlog() error {
 
 		// next binlog pos
 		pos.Pos = ev.Header.LogPos
+		headerTime := ev.Header.Timestamp
+
+		// 如果主备切换了
+		if c.syncer.Failover && c.syncer.FailoverTime != nil {
+			// 时间线回拨1分钟
+			newTimeStamp := c.syncer.FailoverTime.Add(-1 * time.Minute)
+			// 如果binlog小于1分钟前，丢弃
+			if int64(headerTime) < newTimeStamp.Unix() {
+				continue
+			} else {
+				// 到达时间线，重置主备切换，置入成功
+				c.syncer.FailOverFinish()
+			}
+		}
 
 		// We only save position with RotateEvent and XIDEvent.
 		// For RowsEvent, we can't save the position until meeting XIDEvent
@@ -169,7 +183,7 @@ func (c *Canal) runSyncBinlog() error {
 
 		if savePos {
 			c.master.Update(pos)
-			c.master.UpdateTimestamp(ev.Header.Timestamp)
+			c.master.UpdateTimestamp(headerTime)
 
 			if err := c.eventHandler.OnPosSynced(ev.Header, pos, c.master.GTIDSet(), force); err != nil {
 				return errors.Trace(err)

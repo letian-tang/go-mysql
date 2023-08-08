@@ -444,6 +444,10 @@ func (c *Canal) CheckBinlogRowImage(image string) error {
 	return nil
 }
 
+func (c *Canal) GetBinlogSyncer() *replication.BinlogSyncer {
+	return c.syncer
+}
+
 func (c *Canal) checkBinlogRowFormat() error {
 	res, err := c.Execute(`SHOW GLOBAL VARIABLES LIKE 'binlog_format';`)
 	if err != nil {
