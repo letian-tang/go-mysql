@@ -243,8 +243,8 @@ func (c *Canal) updateReplicationDelay(ev *replication.BinlogEvent) {
 func (c *Canal) handleRowsEvent(e *replication.BinlogEvent) error {
 	// 如果主备切换了
 	if c.syncer.Failover && c.syncer.FailoverTime != nil {
-		// 时间线回拨1分钟
-		newTimeStamp := c.syncer.FailoverTime.Add(-1 * time.Minute)
+		// 时间线回拨5分钟
+		newTimeStamp := c.syncer.FailoverTime.Add(-5 * time.Minute)
 		// 如果binlog小于1分钟前，丢弃
 		if int64(e.Header.Timestamp) < newTimeStamp.Unix() {
 			return nil
