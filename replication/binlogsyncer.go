@@ -158,7 +158,9 @@ type BinlogSyncer struct {
 
 	FailoverTime *time.Time
 
-	Position Position
+	CurrTimeStamp uint32
+
+	CacheTimeStamp uint32
 }
 
 // NewBinlogSyncer creates the BinlogSyncer with cfg.
@@ -692,6 +694,7 @@ func (b *BinlogSyncer) prepareSyncPos(pos Position) error {
 		pos.Pos = 4
 	}
 
+	// 重连
 	if err := b.prepare(); err != nil {
 		return errors.Trace(err)
 	}
@@ -705,8 +708,8 @@ func (b *BinlogSyncer) prepareSyncPos(pos Position) error {
 			b.cfg.Logger.Errorf("getMasterPos err=%v", err)
 		} else {
 			b.cfg.Logger.Infof("start new MasterPos=%v", masterPos)
+			b.CacheTimeStamp = b.CurrTimeStamp
 			pos = masterPos
-			b.Position = masterPos
 		}
 	}
 
@@ -721,7 +724,8 @@ func (b *BinlogSyncer) FailOverFinish() {
 	//重置
 	b.Failover = false
 	b.FailoverTime = nil
-	b.Position = Position{}
+	b.CurrTimeStamp = 0
+	b.CacheTimeStamp = 0
 }
 
 func (b *BinlogSyncer) prepareSyncGTID(gset GTIDSet) error {
@@ -858,6 +862,7 @@ func (b *BinlogSyncer) parseEvent(s *BinlogStreamer, data []byte) error {
 	if e.Header.LogPos > 0 {
 		// Some events like FormatDescriptionEvent return 0, ignore.
 		b.nextPos.Pos = e.Header.LogPos
+		b.CurrTimeStamp = e.Header.Timestamp
 	}
 
 	getCurrentGtidSet := func() GTIDSet {

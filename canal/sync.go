@@ -13,6 +13,10 @@ import (
 	"github.com/pingcap/tidb/parser/ast"
 )
 
+var (
+	FailOverError = errors.New("the rds failover, but current binlog is not best binlog")
+)
+
 func (c *Canal) startSyncer() (*replication.BinlogStreamer, error) {
 	gset := c.master.GTIDSet()
 	if gset == nil || gset.String() == "" {
@@ -243,6 +247,10 @@ func (c *Canal) updateReplicationDelay(ev *replication.BinlogEvent) {
 func (c *Canal) handleRowsEvent(e *replication.BinlogEvent) error {
 	// 如果主备切换了
 	if c.syncer.Failover && c.syncer.FailoverTime != nil {
+		// 切换前的最后一条binlog时间，不在Master Status中，报错，说明要回拨了，手工处理
+		if c.syncer.CacheTimeStamp != 0 && c.syncer.CacheTimeStamp < e.Header.Timestamp {
+			return FailOverError
+		}
 		// 时间线回拨5分钟
 		newTimeStamp := c.syncer.FailoverTime.Add(-5 * time.Minute)
 		// 如果binlog小于1分钟前，丢弃
