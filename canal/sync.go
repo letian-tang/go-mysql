@@ -249,7 +249,7 @@ func (c *Canal) handleRowsEvent(e *replication.BinlogEvent) error {
 		if int64(e.Header.Timestamp) < newTimeStamp.Unix() {
 			return nil
 		} else {
-			// 到达时间线，重置主备切换，置入成功
+			// 到达时间线，重置主备切换，开始消费
 			c.syncer.FailOverFinish()
 		}
 	}
