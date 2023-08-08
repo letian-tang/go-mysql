@@ -52,19 +52,6 @@ func (c *Canal) runSyncBinlog() error {
 		// Update the delay between the Canal and the Master before the handler hooks are called
 		c.updateReplicationDelay(ev)
 
-		// 如果主备切换了
-		if c.syncer.Failover && c.syncer.FailoverTime != nil {
-			// 时间线回拨1分钟
-			newTimeStamp := c.syncer.FailoverTime.Add(-1 * time.Minute)
-			// 如果binlog小于1分钟前，丢弃
-			if int64(ev.Header.Timestamp) < newTimeStamp.Unix() {
-				continue
-			} else {
-				// 到达时间线，重置主备切换，置入成功
-				c.syncer.FailOverFinish()
-			}
-		}
-
 		// If log pos equals zero then the received event is a fake rotate event and
 		// contains only a name of the next binlog file
 		// See https://github.com/mysql/mysql-server/blob/8e797a5d6eb3a87f16498edcb7261a75897babae/sql/rpl_binlog_sender.h#L235
@@ -254,6 +241,18 @@ func (c *Canal) updateReplicationDelay(ev *replication.BinlogEvent) {
 }
 
 func (c *Canal) handleRowsEvent(e *replication.BinlogEvent) error {
+	// 如果主备切换了
+	if c.syncer.Failover && c.syncer.FailoverTime != nil {
+		// 时间线回拨1分钟
+		newTimeStamp := c.syncer.FailoverTime.Add(-1 * time.Minute)
+		// 如果binlog小于1分钟前，丢弃
+		if int64(e.Header.Timestamp) < newTimeStamp.Unix() {
+			return nil
+		} else {
+			// 到达时间线，重置主备切换，置入成功
+			c.syncer.FailOverFinish()
+		}
+	}
 	ev := e.Event.(*replication.RowsEvent)
 
 	// Caveat: table may be altered at runtime.

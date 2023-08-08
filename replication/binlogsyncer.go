@@ -157,6 +157,8 @@ type BinlogSyncer struct {
 	Failover bool
 
 	FailoverTime *time.Time
+
+	Position Position
 }
 
 // NewBinlogSyncer creates the BinlogSyncer with cfg.
@@ -704,6 +706,7 @@ func (b *BinlogSyncer) prepareSyncPos(pos Position) error {
 		} else {
 			b.cfg.Logger.Infof("start new MasterPos=%v", masterPos)
 			pos = masterPos
+			b.Position = masterPos
 		}
 	}
 
@@ -718,6 +721,7 @@ func (b *BinlogSyncer) FailOverFinish() {
 	//重置
 	b.Failover = false
 	b.FailoverTime = nil
+	b.Position = Position{}
 }
 
 func (b *BinlogSyncer) prepareSyncGTID(gset GTIDSet) error {
