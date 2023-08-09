@@ -714,8 +714,8 @@ func (b *BinlogSyncer) prepareSyncPos(pos Position) error {
 			b.cfg.Logger.Infof("start new MasterPos=%v", masterPos)
 			//b.CacheTimeStamp = currTimeStamp
 			currTimeStamp := b.CurrTimeStamp
-			p := findBinLog(b.cfg, masterPos, currTimeStamp)
-			pos = *p
+			p, _ := findBinLog(b.cfg, masterPos, currTimeStamp)
+			pos = p
 		}
 	}
 
