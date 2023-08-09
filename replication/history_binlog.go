@@ -12,7 +12,7 @@ import (
 	"github.com/pingcap/errors"
 )
 
-func findBinLog(cfg BinlogSyncerConfig, pos Position, currTimeStamp uint32) *Position {
+func findBinLog(cfg BinlogSyncerConfig, pos Position, currTimeStamp uint32) (Position, error) {
 	// 切换前的最后一条binlog时间，不在Master Status中，报错，说明要回拨了，手工处理
 	lineTime, err := findBinlogByTimeLine(BinlogSyncerConfig{
 		ServerID:        uint32(rand.New(rand.NewSource(time.Now().Unix())).Intn(1000)) + 1001,
@@ -26,12 +26,12 @@ func findBinLog(cfg BinlogSyncerConfig, pos Position, currTimeStamp uint32) *Pos
 		UseDecimal:      true,
 	}, pos)
 	if err != nil {
-		return nil
+		return Position{}, err
 	}
 
 	if currTimeStamp >= lineTime {
 		// 如果找到的binlog时间不早于当前时间,直接返回
-		return &pos
+		return pos, nil
 	}
 	name, _ := getOtherBinlogName(pos.Name, -1)
 	pos.Name = name
