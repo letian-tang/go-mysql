@@ -2,8 +2,6 @@ package canal
 
 import (
 	"fmt"
-	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -246,36 +244,9 @@ func (c *Canal) updateReplicationDelay(ev *replication.BinlogEvent) {
 	atomic.StoreUint32(c.delay, newDelay)
 }
 
-func getOtherBinlogName(binlogName string, add int) (string, error) {
-	i := strings.LastIndexByte(binlogName, '.')
-	if i == -1 {
-		return "", errors.New("parse err")
-	}
-	suffix := binlogName[i+1:]
-	numLen := len(suffix)
-	seq, _ := strconv.Atoi(suffix)
-	seq = seq + add
-	return fmt.Sprintf("%s.%0*d", binlogName[:i], numLen, seq), nil
-}
-
 func (c *Canal) handleRowsEvent(e *replication.BinlogEvent) error {
 	// 如果主备切换了
 	if c.syncer.Failover && c.syncer.FailoverTime != nil {
-		// 切换前的最后一条binlog时间，不在Master Status中，报错，说明要回拨了，手工处理
-		if c.syncer.CacheTimeStamp != 0 && c.syncer.CacheTimeStamp < e.Header.Timestamp {
-			curPos := c.syncer.GetNextPosition()
-			preBinlogName, err := getOtherBinlogName(curPos.Name, -1)
-			if err != nil {
-				return FailOverError
-			}
-			pos := mysql.Position{
-				Name: preBinlogName,
-				Pos:  4,
-			}
-			c.Close()
-			_ = c.RunFrom(pos)
-			return FailOverError
-		}
 		// 时间线回拨10分钟
 		newTimeStamp := c.syncer.FailoverTime.Add(-10 * time.Minute)
 		// 如果binlog小于10分钟前，丢弃

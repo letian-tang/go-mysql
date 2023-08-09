@@ -160,7 +160,7 @@ type BinlogSyncer struct {
 
 	CurrTimeStamp uint32
 
-	CacheTimeStamp uint32
+	//CacheTimeStamp uint32
 }
 
 // NewBinlogSyncer creates the BinlogSyncer with cfg.
@@ -712,8 +712,10 @@ func (b *BinlogSyncer) prepareSyncPos(pos Position) error {
 			b.cfg.Logger.Errorf("getMasterPos err=%v", err)
 		} else {
 			b.cfg.Logger.Infof("start new MasterPos=%v", masterPos)
-			b.CacheTimeStamp = b.CurrTimeStamp
-			pos = masterPos
+			//b.CacheTimeStamp = currTimeStamp
+			currTimeStamp := b.CurrTimeStamp
+			p := findBinLog(b.cfg, masterPos, currTimeStamp)
+			pos = *p
 		}
 	}
 
@@ -729,7 +731,7 @@ func (b *BinlogSyncer) FailOverFinish() {
 	b.Failover = false
 	b.FailoverTime = nil
 	b.CurrTimeStamp = 0
-	b.CacheTimeStamp = 0
+	//b.CacheTimeStamp = 0
 }
 
 func (b *BinlogSyncer) prepareSyncGTID(gset GTIDSet) error {
