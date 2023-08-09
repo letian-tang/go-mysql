@@ -28,12 +28,13 @@ func findBinLog(cfg BinlogSyncerConfig, pos Position, currTimeStamp uint32) *Pos
 	if err != nil {
 		return nil
 	}
-	if currTimeStamp < lineTime {
-		name, _ := getOtherBinlogName(pos.Name, -1)
-		pos.Name = name
-		findBinLog(cfg, pos, currTimeStamp)
+
+	if currTimeStamp >= lineTime {
+		// 如果找到的binlog时间不早于当前时间,直接返回
+		return &pos
 	}
-	return &pos
+	return findBinLog(cfg, pos, currTimeStamp)
+
 }
 
 func findBinlogByTimeLine(cfg BinlogSyncerConfig, position Position) (uint32, error) {
