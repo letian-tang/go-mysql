@@ -268,12 +268,12 @@ func (c *Canal) handleRowsEvent(e *replication.BinlogEvent) error {
 			if err != nil {
 				return FailOverError
 			}
-			c.syncer.SetNextPosition(mysql.Position{
+			pos := mysql.Position{
 				Name: preBinlogName,
 				Pos:  4,
-			})
-			// 强行关闭，让它从新连接
-			c.syncer.Close()
+			}
+			c.Close()
+			_ = c.RunFrom(pos)
 			return FailOverError
 		}
 		// 时间线回拨10分钟
