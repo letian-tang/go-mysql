@@ -33,6 +33,8 @@ func findBinLog(cfg BinlogSyncerConfig, pos Position, currTimeStamp uint32) *Pos
 		// 如果找到的binlog时间不早于当前时间,直接返回
 		return &pos
 	}
+	name, _ := getOtherBinlogName(pos.Name, -1)
+	pos.Name = name
 	return findBinLog(cfg, pos, currTimeStamp)
 
 }
