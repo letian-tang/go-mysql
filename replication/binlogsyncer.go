@@ -23,6 +23,8 @@ import (
 
 var (
 	errSyncRunning = errors.New("Sync is running, must Close first")
+	// backSecond 回拨时间 s
+	backSecond uint32 = 2 * 60
 )
 
 // BinlogSyncerConfig is the configuration for BinlogSyncer.
@@ -712,8 +714,8 @@ func (b *BinlogSyncer) prepareSyncPos(pos Position) error {
 			b.cfg.Logger.Errorf("getMasterPos err=%v", err)
 		} else {
 			b.cfg.Logger.Infof("start new MasterPos=%v", masterPos)
-			//b.CacheTimeStamp = currTimeStamp
-			currTimeStamp := b.CurrTimeStamp
+			//b.CacheTimeStamp = currTimeStamp;减去回拨时间
+			currTimeStamp := b.CurrTimeStamp - backSecond
 			p, _ := findBinLog(b.cfg, masterPos, currTimeStamp)
 			pos = p
 		}

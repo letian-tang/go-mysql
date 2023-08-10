@@ -248,7 +248,7 @@ func (c *Canal) handleRowsEvent(e *replication.BinlogEvent) error {
 	// 如果主备切换了
 	if c.syncer.Failover && c.syncer.CurrTimeStamp != 0 {
 		// 时间线回拨5分钟
-		newTimeStamp := c.syncer.CurrTimeStamp - 5*60
+		newTimeStamp := c.syncer.CurrTimeStamp
 		// 如果binlog小于n分钟前，丢弃
 		if e.Header.Timestamp < newTimeStamp {
 			return nil
