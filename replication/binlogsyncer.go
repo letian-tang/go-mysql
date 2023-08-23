@@ -715,6 +715,7 @@ func (b *BinlogSyncer) prepareSyncPos(pos Position) error {
 		} else {
 			b.cfg.Logger.Infof("start new MasterPos=%v", masterPos)
 			//b.CacheTimeStamp = currTimeStamp;减去回拨时间
+			// b.CurrTimeStamp这个时间不能动，因为可能正常延迟，主备切换了
 			currTimeStamp := b.CurrTimeStamp - backSecond
 			p, _ := findBinLog(b.cfg, masterPos, currTimeStamp)
 			pos = p
