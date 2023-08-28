@@ -254,6 +254,7 @@ func (c *Canal) run() error {
 	if err := c.runSyncBinlog(); err != nil {
 		if errors.Cause(err) != context.Canceled {
 			c.cfg.Logger.Errorf("canal start sync binlog err: %v", err)
+			replication.AddAlert(fmt.Sprintf("canal start sync binlog err: %v", err))
 			return errors.Trace(err)
 		}
 	}

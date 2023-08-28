@@ -72,8 +72,8 @@ func (s *localBinFileAdapterStreamer) GetEvent(ctx context.Context) (*replicatio
 		return ev, err
 	}
 
-	s.canal.cfg.Logger.Info("Could not find first log, try to download the local binlog for retry")
-
+	s.canal.cfg.Logger.Error("Could not find first log, try to download the local binlog for retry")
+	replication.AddAlert("Could not find first log, try to download the local binlog for retry")
 	// local binlog need next position to find binlog file and begin event
 	pos := s.canal.master.Position()
 	newStreamer := s.newLocalBinFileStreamer(s.binFileDownloader, pos)

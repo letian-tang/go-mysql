@@ -335,7 +335,8 @@ func (b *BinlogSyncer) registerSlave() error {
 		}
 		// 主备切换
 		if b.ServerId != serviceId {
-			b.cfg.Logger.Infof("Master-slave failover in MySQL host:%s from %d to %d", b.cfg.Host, b.ServerId, serviceId)
+			b.cfg.Logger.Errorf("Master-slave failover in MySQL host:%s from %d to %d", b.cfg.Host, b.ServerId, serviceId)
+			AddAlert(fmt.Sprintf("Master-slave failover in MySQL host:%s from %d to %d", b.cfg.Host, b.ServerId, serviceId))
 			b.ServerId = serviceId
 			b.Failover = true
 			now := time.Now()
@@ -805,11 +806,13 @@ func (b *BinlogSyncer) onStream(s *BinlogStreamer) {
 					if err = b.retrySync(); err != nil {
 						if b.cfg.MaxReconnectAttempts > 0 && b.retryCount >= b.cfg.MaxReconnectAttempts {
 							b.cfg.Logger.Errorf("retry sync err: %v, exceeded max retries (%d)", err, b.cfg.MaxReconnectAttempts)
+							AddAlert(fmt.Sprintf("retry sync err: %v, exceeded max retries (%d)", err, b.cfg.MaxReconnectAttempts))
 							s.closeWithError(err)
 							return
 						}
 
 						b.cfg.Logger.Errorf("retry sync err: %v, wait 1s and retry again", err)
+						AddAlert(fmt.Sprintf("retry sync err: %v, wait 1s and retry again", err))
 						continue
 					}
 				}
