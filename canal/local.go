@@ -3,6 +3,7 @@ package canal
 import (
 	"context"
 	errors2 "errors"
+	"github.com/go-mysql-org/go-mysql/alert"
 	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/go-mysql-org/go-mysql/replication"
 	"github.com/pingcap/errors"
@@ -73,7 +74,7 @@ func (s *localBinFileAdapterStreamer) GetEvent(ctx context.Context) (*replicatio
 	}
 
 	s.canal.cfg.Logger.Error("Could not find first log, try to download the local binlog for retry")
-	replication.AddAlert("Could not find first log, try to download the local binlog for retry")
+	alert.AddAlert("Could not find first log, try to download the local binlog for retry")
 	// local binlog need next position to find binlog file and begin event
 	pos := s.canal.master.Position()
 	newStreamer := s.newLocalBinFileStreamer(s.binFileDownloader, pos)

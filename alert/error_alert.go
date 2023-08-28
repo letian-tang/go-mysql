@@ -1,4 +1,4 @@
-package replication
+package alert
 
 const (
 	chanLen = 40
