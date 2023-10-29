@@ -334,8 +334,8 @@ func (c *Canal) GetTable(db string, table string) (*schema.Table, error) {
 	if !c.checkTableMatch(key) {
 		return nil, ErrExcludedTable
 	}
-	key = buildCacheKey(db, table)
 	tableLock.RLock()
+	key = buildCacheKey(db, table)
 	t, ok := _tableMetaData[key]
 	if ok {
 		t.Schema = db
@@ -406,8 +406,8 @@ func (c *Canal) GetTable(db string, table string) (*schema.Table, error) {
 
 // ClearTableCache clear table cache
 func (c *Canal) ClearTableCache(db []byte, table []byte) {
-	key := buildCacheKey(string(db), string(table))
 	tableLock.Lock()
+	key := buildCacheKey(string(db), string(table))
 	delete(_tableMetaData, key)
 	if c.cfg.DiscardNoMetaRowEvent {
 		delete(c.errorTablesGetTime, key)
@@ -417,8 +417,8 @@ func (c *Canal) ClearTableCache(db []byte, table []byte) {
 
 // SetTableCache sets table cache value for the given table
 func (c *Canal) SetTableCache(db []byte, table []byte, schema *schema.Table) {
-	key := buildCacheKey(string(db), string(table))
 	tableLock.Lock()
+	key := buildCacheKey(string(db), string(table))
 	_tableMetaData[key] = schema
 	if c.cfg.DiscardNoMetaRowEvent {
 		// if get table info success, delete this key from errorTablesGetTime
