@@ -32,10 +32,15 @@ var (
 	tableLock      sync.RWMutex
 )
 
+const (
+	DefaultMambaRent = "mamba_rent"
+	DefaultSchema    = "mamba"
+)
+
 func buildCacheKey(schema string, table string) string {
 	//如果是mamba_rent的库
-	if strings.Contains(schema, "mamba_rent") {
-		schema = "mamba"
+	if strings.Contains(schema, DefaultMambaRent) {
+		schema = DefaultSchema
 	}
 	//key 的列子 mamba:t_sale_bill:26
 	return strings.ToLower(fmt.Sprintf("%s:%s", schema, table))
@@ -337,13 +342,21 @@ func (c *Canal) GetTable(db string, table string) (*schema.Table, error) {
 	key = buildCacheKey(db, table)
 	tableLock.RLock()
 	t, ok := _tableMetaData[key]
+	var cloneTable *schema.Table
 	if ok {
-		t.Schema = db
+		cloneTable = &schema.Table{
+			Schema:          db,
+			Name:            t.Name,
+			Columns:         t.Columns,
+			Indexes:         t.Indexes,
+			PKColumns:       t.PKColumns,
+			UnsignedColumns: t.UnsignedColumns,
+		}
 	}
 	tableLock.RUnlock()
 
 	if ok {
-		return t, nil
+		return cloneTable, nil
 	}
 
 	if c.cfg.DiscardNoMetaRowEvent {
@@ -376,6 +389,7 @@ func (c *Canal) GetTable(db string, table string) (*schema.Table, error) {
 			}
 			ta.AddColumn("id", "bigint(20)", "", "")
 			ta.AddColumn("type", "char(1)", "", "")
+			// 这个table可以不用管。永不会订阅
 			tableLock.Lock()
 			_tableMetaData[key] = ta
 			tableLock.Unlock()
@@ -399,9 +413,16 @@ func (c *Canal) GetTable(db string, table string) (*schema.Table, error) {
 		// if get table info success, delete this key from errorTablesGetTime
 		delete(c.errorTablesGetTime, key)
 	}
-	t.Schema = db
+	cloneTable = &schema.Table{
+		Schema:          db,
+		Name:            t.Name,
+		Columns:         t.Columns,
+		Indexes:         t.Indexes,
+		PKColumns:       t.PKColumns,
+		UnsignedColumns: t.UnsignedColumns,
+	}
 	tableLock.Unlock()
-	return t, nil
+	return cloneTable, nil
 }
 
 // ClearTableCache clear table cache
