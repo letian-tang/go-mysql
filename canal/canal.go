@@ -37,7 +37,7 @@ const (
 	DefaultSchema    = "mamba"
 )
 
-func buildCacheKey(schema string, table string) string {
+func BuildCacheKey(schema string, table string) string {
 	//如果是mamba_rent的库
 	if strings.Contains(schema, DefaultMambaRent) {
 		schema = DefaultSchema
@@ -339,7 +339,7 @@ func (c *Canal) GetTable(db string, table string) (*schema.Table, error) {
 	if !c.checkTableMatch(key) {
 		return nil, ErrExcludedTable
 	}
-	key = buildCacheKey(db, table)
+	key = BuildCacheKey(db, table)
 	tableLock.RLock()
 	t, ok := _tableMetaData[key]
 	var cloneTable *schema.Table
@@ -427,7 +427,7 @@ func (c *Canal) GetTable(db string, table string) (*schema.Table, error) {
 
 // ClearTableCache clear table cache
 func (c *Canal) ClearTableCache(db []byte, table []byte) {
-	key := buildCacheKey(string(db), string(table))
+	key := BuildCacheKey(string(db), string(table))
 	tableLock.Lock()
 	delete(_tableMetaData, key)
 	if c.cfg.DiscardNoMetaRowEvent {
@@ -438,7 +438,7 @@ func (c *Canal) ClearTableCache(db []byte, table []byte) {
 
 // SetTableCache sets table cache value for the given table
 func (c *Canal) SetTableCache(db []byte, table []byte, schema *schema.Table) {
-	key := buildCacheKey(string(db), string(table))
+	key := BuildCacheKey(string(db), string(table))
 	tableLock.Lock()
 	_tableMetaData[key] = schema
 	if c.cfg.DiscardNoMetaRowEvent {
