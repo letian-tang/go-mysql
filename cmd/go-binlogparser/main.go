@@ -2,8 +2,6 @@ package main
 
 import (
 	"flag"
-	"os"
-
 	"github.com/go-mysql-org/go-mysql/replication"
 )
 
@@ -14,9 +12,10 @@ func main() {
 	flag.Parse()
 
 	p := replication.NewBinlogParser()
-
+	strem := replication.NewBinlogStreamer()
 	f := func(e *replication.BinlogEvent) error {
-		e.Dump(os.Stdout)
+		//e.Dump(os.Stdout)
+		strem.AddEventToStreamer(e)
 		return nil
 	}
 

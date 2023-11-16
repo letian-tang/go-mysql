@@ -13,6 +13,10 @@ import (
 	"github.com/pingcap/tidb/parser/ast"
 )
 
+var (
+	FailOverError = errors.New("the rds failover, but current binlog is not best binlog")
+)
+
 func (c *Canal) startSyncer() (*replication.BinlogStreamer, error) {
 	gset := c.master.GTIDSet()
 	if gset == nil || gset.String() == "" {
@@ -35,7 +39,7 @@ func (c *Canal) startSyncer() (*replication.BinlogStreamer, error) {
 }
 
 func (c *Canal) runSyncBinlog() error {
-	s, err := c.startSyncer()
+	s, err := c.adaptLocalBinFileStreamer(c.startSyncer())
 	if err != nil {
 		return err
 	}
@@ -241,6 +245,17 @@ func (c *Canal) updateReplicationDelay(ev *replication.BinlogEvent) {
 }
 
 func (c *Canal) handleRowsEvent(e *replication.BinlogEvent) error {
+	// 如果主备切换了
+	if c.syncer.Failover && c.syncer.CurrTimeStamp != 0 {
+		newTimeStamp := c.syncer.CurrTimeStamp
+		// 如果binlog小于n分钟前，丢弃
+		if e.Header.Timestamp < newTimeStamp {
+			return nil
+		} else {
+			// 到达时间线，重置主备切换，开始消费
+			c.syncer.FailOverFinish()
+		}
+	}
 	ev := e.Event.(*replication.RowsEvent)
 
 	// Caveat: table may be altered at runtime.

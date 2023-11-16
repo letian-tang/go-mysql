@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"fmt"
+	"github.com/go-mysql-org/go-mysql/alert"
 	"net"
 	"os"
 	"strconv"
@@ -23,6 +24,8 @@ import (
 
 var (
 	errSyncRunning = errors.New("Sync is running, must Close first")
+	// backSecond 回拨时间 s
+	backSecond uint32 = 2 * 60
 )
 
 // BinlogSyncerConfig is the configuration for BinlogSyncer.
@@ -151,6 +154,16 @@ type BinlogSyncer struct {
 	lastConnectionID uint32
 
 	retryCount int
+
+	ServerId int64
+
+	Failover bool
+
+	FailoverTime *time.Time
+
+	CurrTimeStamp uint32
+
+	//CacheTimeStamp uint32
 }
 
 // NewBinlogSyncer creates the BinlogSyncer with cfg.
@@ -312,6 +325,27 @@ func (b *BinlogSyncer) registerSlave() error {
 		}
 	}
 
+	// 当前的serviceId
+	if r, err := b.c.Execute("SHOW VARIABLES LIKE 'server_id'"); err != nil {
+		return errors.Trace(err)
+	} else {
+		serviceId, _ := r.GetInt(0, 1)
+		// 启动或重启
+		if b.ServerId == 0 {
+			b.ServerId = serviceId
+		}
+		// 主备切换
+		if b.ServerId != serviceId {
+			b.cfg.Logger.Errorf("Master-slave failover in MySQL host:%s from %d to %d", b.cfg.Host, b.ServerId, serviceId)
+			alert.AddAlert(fmt.Sprintf("Master-slave failover in MySQL host:%s from %d to %d", b.cfg.Host, b.ServerId, serviceId))
+			b.ServerId = serviceId
+			b.Failover = true
+			now := time.Now()
+			b.FailoverTime = &now
+		}
+
+	}
+
 	if b.cfg.Flavor == MariaDBFlavor {
 		// Refer https://github.com/alibaba/canal/wiki/BinlogChange(MariaDB5&10)
 		// Tell the server that we understand GTIDs by setting our slave capability
@@ -348,6 +382,18 @@ func (b *BinlogSyncer) registerSlave() error {
 	}
 
 	return nil
+}
+
+func (b *BinlogSyncer) getMasterPos() (Position, error) {
+	rr, err := b.c.Execute("SHOW MASTER STATUS")
+	if err != nil {
+		return Position{}, errors.Trace(err)
+	}
+
+	name, _ := rr.GetString(0, 0)
+	pos, _ := rr.GetInt(0, 1)
+
+	return Position{Name: name, Pos: uint32(pos)}, nil
 }
 
 func (b *BinlogSyncer) enableSemiSync() error {
@@ -403,6 +449,10 @@ func (b *BinlogSyncer) startDumpStream() *BinlogStreamer {
 // GetNextPosition returns the next position of the syncer
 func (b *BinlogSyncer) GetNextPosition() Position {
 	return b.nextPos
+}
+
+func (b *BinlogSyncer) SetNextPosition(pos Position) {
+	b.nextPos = pos
 }
 
 // StartSync starts syncing from the `pos` position.
@@ -652,8 +702,26 @@ func (b *BinlogSyncer) prepareSyncPos(pos Position) error {
 		pos.Pos = 4
 	}
 
+	// 重连
 	if err := b.prepare(); err != nil {
 		return errors.Trace(err)
+	}
+
+	// 主备切换
+	if b.Failover {
+		masterPos, err := b.getMasterPos()
+		masterPos.Pos = 4
+		// 获取到pos
+		if err != nil {
+			b.cfg.Logger.Errorf("getMasterPos err=%v", err)
+		} else {
+			b.cfg.Logger.Infof("start new MasterPos=%v", masterPos)
+			//b.CacheTimeStamp = currTimeStamp;减去回拨时间
+			// b.CurrTimeStamp这个时间不能动，因为可能正常延迟，主备切换了
+			currTimeStamp := b.CurrTimeStamp - backSecond
+			p, _ := findBinLog(b.cfg, masterPos, currTimeStamp)
+			pos = p
+		}
 	}
 
 	if err := b.writeBinlogDumpCommand(pos); err != nil {
@@ -661,6 +729,14 @@ func (b *BinlogSyncer) prepareSyncPos(pos Position) error {
 	}
 
 	return nil
+}
+
+func (b *BinlogSyncer) FailOverFinish() {
+	//重置
+	b.Failover = false
+	b.FailoverTime = nil
+	b.CurrTimeStamp = 0
+	//b.CacheTimeStamp = 0
 }
 
 func (b *BinlogSyncer) prepareSyncGTID(gset GTIDSet) error {
@@ -731,11 +807,13 @@ func (b *BinlogSyncer) onStream(s *BinlogStreamer) {
 					if err = b.retrySync(); err != nil {
 						if b.cfg.MaxReconnectAttempts > 0 && b.retryCount >= b.cfg.MaxReconnectAttempts {
 							b.cfg.Logger.Errorf("retry sync err: %v, exceeded max retries (%d)", err, b.cfg.MaxReconnectAttempts)
+							alert.AddAlert(fmt.Sprintf("retry sync err: %v, exceeded max retries (%d)", err, b.cfg.MaxReconnectAttempts))
 							s.closeWithError(err)
 							return
 						}
 
 						b.cfg.Logger.Errorf("retry sync err: %v, wait 1s and retry again", err)
+						alert.AddAlert(fmt.Sprintf("retry sync err: %v, wait 1s and retry again", err))
 						continue
 					}
 				}
@@ -797,6 +875,7 @@ func (b *BinlogSyncer) parseEvent(s *BinlogStreamer, data []byte) error {
 	if e.Header.LogPos > 0 {
 		// Some events like FormatDescriptionEvent return 0, ignore.
 		b.nextPos.Pos = e.Header.LogPos
+		b.CurrTimeStamp = e.Header.Timestamp
 	}
 
 	getCurrentGtidSet := func() GTIDSet {
@@ -904,4 +983,8 @@ func (b *BinlogSyncer) killConnection(conn *client.Conn, id uint32) {
 		}
 	}
 	b.cfg.Logger.Infof("kill last connection id %d", id)
+}
+
+func (b *BinlogSyncer) GetBinlogParser() *BinlogParser {
+	return b.parser
 }
