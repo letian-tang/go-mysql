@@ -816,12 +816,21 @@ func (b *BinlogSyncer) prepareSyncPos(pos mysql.Position) error {
 		// 获取到pos
 		if err != nil {
 			b.cfg.Logger.Error(fmt.Sprintf("getMasterPos err=%v", err))
-		} else {
+		} else if b.CurrTimeStamp != 0 {
+			// 尚未收到任何事件时无法确定时间线，直接从 masterPos 开始
 			b.cfg.Logger.Info(fmt.Sprintf("start new MasterPos=%v", masterPos))
 			//b.CurrTimeStamp这个时间不能动，因为可能正常延迟，主备切换了
 			currTimeStamp := b.CurrTimeStamp - backSecond
-			p, _ := findBinLog(b.cfg, masterPos, currTimeStamp)
-			pos = p
+			// 回拨失败（如 binlog 已被 purge）时保留 masterPos，避免空 Position 导致 dump 失败
+			if p, err := findBinLog(b.cfg, masterPos, currTimeStamp); err != nil {
+				b.cfg.Logger.Error(fmt.Sprintf("findBinLog err=%v, fallback to MasterPos=%v", err, masterPos))
+			} else {
+				pos = p
+			}
+		} else {
+			// 尚未收到过事件，无从确定时间线：保留 checkpoint 位置继续 dump，
+			// 不跳到 masterPos（否则会丢弃 checkpoint 到当前的事件）
+			b.cfg.Logger.Info(fmt.Sprintf("start from checkpoint pos=%v, MasterPos=%v", pos, masterPos))
 		}
 	}
 
