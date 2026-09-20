@@ -16,12 +16,17 @@ import (
 	"github.com/google/uuid"
 	"github.com/pingcap/errors"
 
+	"github.com/go-mysql-org/go-mysql/alert"
 	"github.com/go-mysql-org/go-mysql/client"
 	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/go-mysql-org/go-mysql/utils"
 )
 
-var errSyncRunning = errors.New("Sync is running, must Close first")
+var (
+	errSyncRunning = errors.New("Sync is running, must Close first")
+	// backSecond 回拨时间 s
+	backSecond uint32 = 2 * 60
+)
 
 // BinlogSyncerConfig is the configuration for BinlogSyncer.
 type BinlogSyncerConfig struct {
@@ -207,6 +212,14 @@ type BinlogSyncer struct {
 	lastConnectionID uint32
 
 	retryCount int
+
+	ServerId int64
+
+	Failover bool
+
+	FailoverTime *time.Time
+
+	CurrTimeStamp uint32
 }
 
 // NewBinlogSyncer creates the BinlogSyncer with the given configuration.
@@ -379,6 +392,27 @@ func (b *BinlogSyncer) registerSlave() error {
 		}
 	}
 
+	// 当前的serviceId
+	if r, err := b.c.Execute("SHOW VARIABLES LIKE 'server_id'"); err != nil {
+		return errors.Trace(err)
+	} else {
+		serviceId, _ := r.GetInt(0, 1)
+		// 启动或重启
+		if b.ServerId == 0 {
+			b.ServerId = serviceId
+		}
+		// 主备切换
+		if b.ServerId != serviceId {
+			b.cfg.Logger.Error(fmt.Sprintf("Master-slave failover in MySQL host:%s from %d to %d", b.cfg.Host, b.ServerId, serviceId))
+			alert.AddAlert(fmt.Sprintf("Master-slave failover in MySQL host:%s from %d to %d", b.cfg.Host, b.ServerId, serviceId))
+			b.ServerId = serviceId
+			b.Failover = true
+			now := time.Now()
+			b.FailoverTime = &now
+		}
+
+	}
+
 	if b.cfg.Flavor == mysql.MariaDBFlavor {
 		// Refer https://github.com/alibaba/canal/wiki/BinlogChange(MariaDB5&10)
 		// Tell the server that we understand GTIDs by setting our slave capability
@@ -418,6 +452,18 @@ func (b *BinlogSyncer) registerSlave() error {
 	}
 
 	return nil
+}
+
+func (b *BinlogSyncer) getMasterPos() (mysql.Position, error) {
+	rr, err := b.c.Execute("SHOW MASTER STATUS")
+	if err != nil {
+		return mysql.Position{}, errors.Trace(err)
+	}
+
+	name, _ := rr.GetString(0, 0)
+	pos, _ := rr.GetInt(0, 1)
+
+	return mysql.Position{Name: name, Pos: uint32(pos)}, nil
 }
 
 func (b *BinlogSyncer) enableSemiSync() error {
@@ -481,6 +527,10 @@ func (b *BinlogSyncer) startDumpStream() *BinlogStreamer {
 // GetNextPosition returns the next position of the syncer
 func (b *BinlogSyncer) GetNextPosition() mysql.Position {
 	return b.nextPos
+}
+
+func (b *BinlogSyncer) SetNextPosition(pos mysql.Position) {
+	b.nextPos = pos
 }
 
 func (b *BinlogSyncer) checkFlavor() {
@@ -754,8 +804,25 @@ func (b *BinlogSyncer) prepareSyncPos(pos mysql.Position) error {
 		pos.Pos = 4
 	}
 
+	// 重连
 	if err := b.prepare(); err != nil {
 		return errors.Trace(err)
+	}
+
+	// 主备切换
+	if b.Failover {
+		masterPos, err := b.getMasterPos()
+		masterPos.Pos = 4
+		// 获取到pos
+		if err != nil {
+			b.cfg.Logger.Error(fmt.Sprintf("getMasterPos err=%v", err))
+		} else {
+			b.cfg.Logger.Info(fmt.Sprintf("start new MasterPos=%v", masterPos))
+			//b.CurrTimeStamp这个时间不能动，因为可能正常延迟，主备切换了
+			currTimeStamp := b.CurrTimeStamp - backSecond
+			p, _ := findBinLog(b.cfg, masterPos, currTimeStamp)
+			pos = p
+		}
 	}
 
 	if err := b.writeBinlogDumpCommand(pos); err != nil {
@@ -763,6 +830,13 @@ func (b *BinlogSyncer) prepareSyncPos(pos mysql.Position) error {
 	}
 
 	return nil
+}
+
+func (b *BinlogSyncer) FailOverFinish() {
+	//重置
+	b.Failover = false
+	b.FailoverTime = nil
+	b.CurrTimeStamp = 0
 }
 
 func (b *BinlogSyncer) prepareSyncGTID(gset mysql.GTIDSet) error {
@@ -836,6 +910,7 @@ func (b *BinlogSyncer) onStream(s *BinlogStreamer) {
 								"retry sync err, exceeded max retries",
 								slog.Any("error", err), slog.Int("maxAttempts", b.cfg.MaxReconnectAttempts),
 							)
+							alert.AddAlert(fmt.Sprintf("retry sync err: %v, exceeded max retries (%d)", err, b.cfg.MaxReconnectAttempts))
 							s.closeWithError(err)
 							return
 						}
@@ -844,6 +919,7 @@ func (b *BinlogSyncer) onStream(s *BinlogStreamer) {
 							"retry sync err, wait 1s and retry again",
 							slog.Any("error", err), slog.Int("retryCount", b.retryCount), slog.Int("maxAttempts", b.cfg.MaxReconnectAttempts),
 						)
+						alert.AddAlert(fmt.Sprintf("retry sync err: %v, wait 1s and retry again", err))
 						continue
 					}
 				}
@@ -925,6 +1001,7 @@ func (b *BinlogSyncer) handleEventAndACK(s *BinlogStreamer, e *BinlogEvent, need
 	if e.Header.LogPos > 0 {
 		// Some events like FormatDescriptionEvent return 0, ignore.
 		b.nextPos.Pos = e.Header.LogPos
+		b.CurrTimeStamp = e.Header.Timestamp
 	} else if b.shouldCalculateDynamicLogPos(e) {
 		calculatedPos := b.nextPos.Pos + e.Header.EventSize
 		e.Header.LogPos = calculatedPos
@@ -1107,4 +1184,8 @@ func (b *BinlogSyncer) killConnection(conn *client.Conn, id uint32) {
 		}
 	}
 	b.cfg.Logger.Info("kill last connection", slog.Int64("id", int64(id)))
+}
+
+func (b *BinlogSyncer) GetBinlogParser() *BinlogParser {
+	return b.parser
 }

@@ -70,6 +70,10 @@ func (s *BinlogStreamer) close() {
 	s.closeWithError(nil)
 }
 
+func (s *BinlogStreamer) CloseWithError(err error) {
+	s.closeWithError(err)
+}
+
 func (s *BinlogStreamer) closeWithError(err error) {
 	if err == nil {
 		err = ErrSyncClosed
