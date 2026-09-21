@@ -74,6 +74,11 @@ type Canal struct {
 
 	delay atomic.Uint32
 
+	// failoverCutoffTimestamp is captured after all events buffered from the
+	// old primary have been handled. Earlier rows replayed from the new primary
+	// are recovery overlap and are skipped.
+	failoverCutoffTimestamp uint32
+
 	ctx               context.Context
 	cancel            context.CancelFunc
 	binFileDownloader BinlogFileDownloader
@@ -509,6 +514,7 @@ func (c *Canal) prepareSyncer() error {
 		UseDecimal:              c.cfg.UseDecimal,
 		ParseTime:               c.cfg.ParseTime,
 		SemiSyncEnabled:         c.cfg.SemiSyncEnabled,
+		EmitFailoverBoundary:    true,
 		MaxReconnectAttempts:    c.cfg.MaxReconnectAttempts,
 		DisableRetrySync:        c.cfg.DisableRetrySync,
 		TimestampStringLocation: c.cfg.TimestampStringLocation,

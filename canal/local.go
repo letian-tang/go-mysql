@@ -92,7 +92,7 @@ func (s *localBinFileAdapterStreamer) newLocalBinFileStreamer(download BinlogFil
 	}
 	go func(binFilePath string, streamer *replication.BinlogStreamer) {
 		err := s.canal.syncer.GetBinlogParser().ParseFile(binFilePath, 0, func(ev *replication.BinlogEvent) error {
-			return streamer.AddEventToStreamer(ev)
+			return streamer.AddEventToStreamerContext(s.canal.ctx, ev)
 		})
 		if err != nil {
 			streamer.CloseWithError(err)

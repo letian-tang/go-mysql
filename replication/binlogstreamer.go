@@ -14,9 +14,10 @@ var (
 
 // BinlogStreamer gets the streaming event.
 type BinlogStreamer struct {
-	ch  chan *BinlogEvent
-	ech chan error
-	err error
+	ch         chan *BinlogEvent
+	ech        chan error
+	pendingErr error
+	err        error
 }
 
 // GetEvent gets the binlog event one by one, it will block until Syncer receives any events from MySQL
@@ -26,11 +27,36 @@ func (s *BinlogStreamer) GetEvent(ctx context.Context) (*BinlogEvent, error) {
 		return nil, ErrNeedSyncAgain
 	}
 
+	// Drain events queued before an error first. A failover boundary is queued
+	// before the new connection can report an error; selecting the error first
+	// would abandon old-primary events still waiting in ch.
 	select {
 	case c := <-s.ch:
 		return c, nil
-	case s.err = <-s.ech:
-		return nil, s.err
+	default:
+	}
+	if s.pendingErr != nil {
+		err := s.pendingErr
+		s.pendingErr = nil
+		s.err = err
+		return nil, err
+	}
+
+	select {
+	case c := <-s.ch:
+		return c, nil
+	case err := <-s.ech:
+		// The producer may have queued an event immediately before reporting
+		// this error. Preserve the error and drain that event first.
+		s.pendingErr = err
+		select {
+		case c := <-s.ch:
+			return c, nil
+		default:
+			s.pendingErr = nil
+			s.err = err
+			return nil, err
+		}
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -105,11 +131,20 @@ func NewBinlogStreamerWithChanSize(chanSize int) *BinlogStreamer {
 // AddEventToStreamer adds a binlog event to the streamer. You can use it when you want to add an event to the streamer manually.
 // can be used in replication handlers
 func (s *BinlogStreamer) AddEventToStreamer(ev *BinlogEvent) error {
+	return s.AddEventToStreamerContext(context.Background(), ev)
+}
+
+// AddEventToStreamerContext adds an event or stops waiting when the producer
+// is canceled. It is used by local-file parsing so Close cannot hang on a full
+// streamer after the Canal consumer has stopped.
+func (s *BinlogStreamer) AddEventToStreamerContext(ctx context.Context, ev *BinlogEvent) error {
 	select {
 	case s.ch <- ev:
 		return nil
 	case err := <-s.ech:
 		return err
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

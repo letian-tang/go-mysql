@@ -35,6 +35,15 @@ type BinlogEvent struct {
 	Event  Event
 }
 
+// FailoverBoundaryEvent separates events already buffered from the old
+// primary from events read after reconnecting to a new primary. Canal consumes
+// this marker before dispatching events to user handlers.
+type FailoverBoundaryEvent struct{}
+
+func (*FailoverBoundaryEvent) Dump(io.Writer) {}
+
+func (*FailoverBoundaryEvent) Decode([]byte) error { return nil }
+
 func (e *BinlogEvent) Dump(w io.Writer) {
 	e.Header.Dump(w)
 	e.Event.Dump(w)

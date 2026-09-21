@@ -54,6 +54,11 @@ type BinlogSyncerConfig struct {
 	// SemiSyncEnabled enables semi-sync or not.
 	SemiSyncEnabled bool
 
+	// EmitFailoverBoundary emits an internal ordering marker after reconnecting
+	// to a different server. Canal uses it to separate buffered old-primary
+	// events from replayed new-primary events.
+	EmitFailoverBoundary bool
+
 	// RawModeEnabled is for not parsing binlog event.
 	RawModeEnabled bool
 
@@ -220,6 +225,8 @@ type BinlogSyncer struct {
 	FailoverTime *time.Time
 
 	CurrTimeStamp uint32
+
+	failoverBoundaryPending bool
 }
 
 // NewBinlogSyncer creates the BinlogSyncer with the given configuration.
@@ -407,6 +414,7 @@ func (b *BinlogSyncer) registerSlave() error {
 			alert.AddAlert(fmt.Sprintf("Master-slave failover in MySQL host:%s from %d to %d", b.cfg.Host, b.ServerId, serviceId))
 			b.ServerId = serviceId
 			b.Failover = true
+			b.failoverBoundaryPending = true
 			now := time.Now()
 			b.FailoverTime = &now
 		}
@@ -842,6 +850,9 @@ func (b *BinlogSyncer) prepareSyncPos(pos mysql.Position) error {
 }
 
 func (b *BinlogSyncer) FailOverFinish() {
+	b.m.Lock()
+	defer b.m.Unlock()
+
 	//重置
 	b.Failover = false
 	b.FailoverTime = nil
@@ -934,6 +945,21 @@ func (b *BinlogSyncer) onStream(s *BinlogStreamer) {
 				}
 
 				break
+			}
+
+			if b.failoverBoundaryPending {
+				if b.cfg.EmitFailoverBoundary {
+					select {
+					case s.ch <- &BinlogEvent{
+						Header: &EventHeader{},
+						Event:  &FailoverBoundaryEvent{},
+					}:
+					case <-b.ctx.Done():
+						s.close()
+						return
+					}
+				}
+				b.failoverBoundaryPending = false
 			}
 
 			// we connect the server and begin to re-sync again.

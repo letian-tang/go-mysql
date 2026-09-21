@@ -48,6 +48,10 @@ func (c *Canal) runSyncBinlog() error {
 		if err != nil {
 			return errors.Trace(err)
 		}
+		if _, ok := ev.Event.(*replication.FailoverBoundaryEvent); ok {
+			c.beginFailoverRecovery()
+			continue
+		}
 
 		// Update the delay between the Canal and the Master before the handler hooks are called
 		c.updateReplicationDelay(ev)
@@ -269,16 +273,8 @@ func (c *Canal) updateReplicationDelay(ev *replication.BinlogEvent) {
 }
 
 func (c *Canal) handleRowsEvent(e *replication.BinlogEvent) error {
-	// 如果主备切换了
-	if c.syncer.Failover && c.syncer.CurrTimeStamp != 0 {
-		newTimeStamp := c.syncer.CurrTimeStamp
-		// 如果binlog小于n分钟前，丢弃
-		if e.Header.Timestamp < newTimeStamp {
-			return nil
-		} else {
-			// 到达时间线，重置主备切换，开始消费
-			c.syncer.FailOverFinish()
-		}
+	if c.shouldSkipFailoverRow(e.Header.Timestamp) {
+		return nil
 	}
 	ev := e.Event.(*replication.RowsEvent)
 
@@ -312,6 +308,27 @@ func (c *Canal) handleRowsEvent(e *replication.BinlogEvent) error {
 	}
 	events := newRowsEvent(t, action, ev.Rows, e.Header)
 	return c.eventHandler.OnRow(events)
+}
+
+func (c *Canal) beginFailoverRecovery() {
+	c.failoverCutoffTimestamp = c.master.Timestamp()
+	if c.failoverCutoffTimestamp == 0 {
+		c.syncer.FailOverFinish()
+	}
+}
+
+func (c *Canal) shouldSkipFailoverRow(timestamp uint32) bool {
+	if c.failoverCutoffTimestamp == 0 {
+		return false
+	}
+	// 新主库会回拨一段时间；只跳过切换边界之后重放的重叠事件。
+	if timestamp < c.failoverCutoffTimestamp {
+		return true
+	}
+	// 到达旧主库已处理的时间线，结束回拨过滤。
+	c.failoverCutoffTimestamp = 0
+	c.syncer.FailOverFinish()
+	return false
 }
 
 func (c *Canal) FlushBinlog() error {
