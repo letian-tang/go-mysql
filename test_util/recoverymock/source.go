@@ -27,16 +27,17 @@ type Reply struct {
 	Disconnect bool
 }
 type Source struct {
-	Addr     string
-	Dump     func(Dump) Reply
-	mu       sync.Mutex
-	node     uint32
-	logs     []string
-	conns    []net.Conn
-	listener net.Listener
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	Addr      string
+	Dump      func(Dump) Reply
+	mu        sync.Mutex
+	node      uint32
+	logs      []string
+	conns     []net.Conn
+	listener  net.Listener
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	queryHook func(context.Context, string) error
 }
 
 func New(node uint32, logs []string, dump func(Dump) Reply) (*Source, error) {
@@ -65,6 +66,13 @@ func New(node uint32, logs []string, dump func(Dump) Reply) (*Source, error) {
 	return s, nil
 }
 func (s *Source) SetNode(node uint32) { s.mu.Lock(); s.node = node; s.mu.Unlock() }
+
+// SetQueryHook injects cancellable metadata-query stalls in local tests.
+func (s *Source) SetQueryHook(hook func(context.Context, string) error) {
+	s.mu.Lock()
+	s.queryHook = hook
+	s.mu.Unlock()
+}
 func (s *Source) Close() {
 	s.cancel()
 	_ = s.listener.Close()
@@ -99,6 +107,14 @@ func (s *Source) serve(raw net.Conn, node uint32) {
 			err = c.WriteValue(nil)
 		case mysql.COM_QUERY:
 			q := strings.ToLower(string(data[1:]))
+			s.mu.Lock()
+			hook := s.queryHook
+			s.mu.Unlock()
+			if hook != nil {
+				if err := hook(s.ctx, q); err != nil {
+					return
+				}
+			}
 			var r *mysql.Result
 			switch {
 			case strings.Contains(q, "server_id"):

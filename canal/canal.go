@@ -93,6 +93,12 @@ var (
 )
 
 func NewCanal(cfg *Config) (*Canal, error) {
+	return NewCanalWithContext(context.Background(), cfg)
+}
+
+// NewCanalWithContext allows the instance owner to cancel initialization as
+// well as metadata queries and replication. NewCanal retains its old API.
+func NewCanalWithContext(ctx context.Context, cfg *Config) (result *Canal, err error) {
 	c := new(Canal)
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -103,7 +109,18 @@ func NewCanal(cfg *Config) (*Canal, error) {
 	}
 	c.cfg = cfg
 
-	c.ctx, c.cancel = context.WithCancel(context.Background())
+	c.ctx, c.cancel = context.WithCancel(ctx)
+	defer func() {
+		if err != nil {
+			c.cancel()
+			if c.syncer != nil {
+				c.syncer.Close()
+			}
+			if c.conn != nil {
+				_ = c.conn.Close()
+			}
+		}
+	}()
 
 	c.dumpDoneCh = make(chan struct{})
 	c.eventHandler = &DummyEventHandler{}
@@ -113,8 +130,6 @@ func NewCanal(cfg *Config) (*Canal, error) {
 		c.errorTablesGetTime = make(map[string]time.Time)
 	}
 	c.master = &masterInfo{logger: c.cfg.Logger}
-
-	var err error
 
 	if err = c.prepareDumper(); err != nil {
 		return nil, errors.Trace(err)
@@ -583,8 +598,14 @@ func (c *Canal) connect(options ...client.Option) (*client.Conn, error) {
 	ctx, cancel := context.WithTimeout(c.ctx, time.Second*10)
 	defer cancel()
 
-	return client.ConnectWithDialer(ctx, "", c.cfg.Addr,
-		c.cfg.User, c.cfg.Password, "", c.cfg.Dialer, options...)
+	conn, err := client.ConnectWithDialer(ctx, "", c.cfg.Addr,
+		c.cfg.User, c.cfg.Password, "", replication.RecoveryDialer(c.ctx, c.cfg.Dialer), options...)
+	if err == nil {
+		// Metadata queries remain idle without a timeout as before. Owner
+		// cancellation closes the raw socket even while Execute owns connLock.
+		_ = conn.SetDeadline(time.Time{})
+	}
+	return conn, err
 }
 
 // Execute a SQL

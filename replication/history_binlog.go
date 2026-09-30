@@ -66,6 +66,7 @@ func newHistoryProberContext(ctx context.Context, cfg BinlogSyncerConfig) (*hist
 			c.SetTLSConfig(cfg.TLSConfig)
 			c.SetAttributes(map[string]string{"_client_role": "binary_log_listener"})
 			c.ReadTimeout = probeReadTimeout
+			c.WriteTimeout = probeReadTimeout
 			return nil
 		})
 	if err != nil {
@@ -87,6 +88,12 @@ func newHistoryProberContext(ctx context.Context, cfg BinlogSyncerConfig) (*hist
 
 	p := &historyProber{conn: c, sid: sid}
 	if err := p.registerSlave(cfg); err != nil {
+		_ = c.Close()
+		return nil, errors.Trace(err)
+	}
+	// The dialer's absolute deadline only bounds the handshake. Each probe
+	// read/write has its own timeout; a long scan must not poison later writes.
+	if err := c.SetDeadline(time.Time{}); err != nil {
 		_ = c.Close()
 		return nil, errors.Trace(err)
 	}

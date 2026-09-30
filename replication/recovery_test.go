@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,6 +22,72 @@ func probeSyncer(t *testing.T, src *recoverymock.Source) *replication.BinlogSync
 	b := replication.NewBinlogSyncer(replication.BinlogSyncerConfig{Host: host, Port: uint16(p), User: "test", ServerID: 99, ManagedRecovery: true, ExpectedSourceServerID: 700})
 	t.Cleanup(b.Close)
 	return b
+}
+
+func TestRecoveryMalformedProbeAndOnlineStreamReturnError(t *testing.T) {
+	b := recoverymock.NewBuilder(11)
+	b.Add(2, 1000, []byte{0})
+	src, err := recoverymock.New(700, []string{"bin.000001"}, func(recoverymock.Dump) recoverymock.Reply { return recoverymock.Reply{Events: b.Events, Wait: true} })
+	require.NoError(t, err)
+	defer src.Close()
+	syncer := probeSyncer(t, src)
+	require.NotPanics(t, func() {
+		_, err := syncer.FindRecoveryPosition(context.Background(), 1200)
+		require.ErrorContains(t, err, "decoder panic")
+	})
+	stream, err := syncer.StartSync(mysql.Position{Name: "bin.000001", Pos: 4})
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	for {
+		_, err := stream.GetEvent(ctx)
+		if err != nil {
+			require.ErrorContains(t, err, "decoder panic")
+			break
+		}
+	}
+}
+
+type shortenedRecoveryHandshakeDeadline struct{ net.Conn }
+
+func (c shortenedRecoveryHandshakeDeadline) SetDeadline(deadline time.Time) error {
+	if !deadline.IsZero() {
+		deadline = time.Now().Add(200 * time.Millisecond)
+	}
+	return c.Conn.SetDeadline(deadline)
+}
+
+func TestRecoveryProbeClearsHandshakeDeadlineAfterLongScan(t *testing.T) {
+	late := recoverymock.NewBuilder(11)
+	late.Transaction(900, 900, 1, 1)
+	early := recoverymock.NewBuilder(11)
+	early.Transaction(100, 100, 2, 2)
+	var dumps atomic.Int32
+	src, err := recoverymock.New(700, []string{"bin.000001", "bin.000002"}, func(recoverymock.Dump) recoverymock.Reply {
+		if dumps.Add(1) == 1 {
+			time.Sleep(400 * time.Millisecond) // Scale the initial 10s deadline only.
+			return recoverymock.Reply{Events: late.Events}
+		}
+		return recoverymock.Reply{Events: early.Events}
+	})
+	require.NoError(t, err)
+	defer src.Close()
+	host, port, err := net.SplitHostPort(src.Addr)
+	require.NoError(t, err)
+	p, err := strconv.Atoi(port)
+	require.NoError(t, err)
+	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
+		raw, err := (&net.Dialer{}).DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return shortenedRecoveryHandshakeDeadline{raw}, nil
+	}
+	b := replication.NewBinlogSyncer(replication.BinlogSyncerConfig{Host: host, Port: uint16(p), User: "test", ServerID: 99, ExpectedSourceServerID: 700, ManagedRecovery: true, Dialer: dial})
+	defer b.Close()
+	pos, err := b.FindRecoveryPosition(context.Background(), 300)
+	require.NoError(t, err)
+	require.Equal(t, "bin.000002", pos.Name)
 }
 func TestRecoveryProbeUsesCommitNotFormatDescriptionTime(t *testing.T) {
 	b := recoverymock.NewBuilder(11)

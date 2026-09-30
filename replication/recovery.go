@@ -17,6 +17,13 @@ type recoveryConnection struct {
 	stop func() bool
 }
 
+// RecoveryDialer binds raw transport cancellation to the owner's context.
+// It also bounds the handshake; the caller may clear the initial deadline
+// after setup if its long-lived stream intentionally has no read timeout.
+func RecoveryDialer(ctx context.Context, base client.Dialer) client.Dialer {
+	return recoveryDialer(ctx, base)
+}
+
 func recoveryDialer(ctx context.Context, base client.Dialer) client.Dialer {
 	if base == nil {
 		base = (&net.Dialer{}).DialContext
@@ -73,6 +80,26 @@ func (b *BinlogSyncer) NewFileParser() *BinlogParser {
 	p := b.parser.cloneForPayloadDecode()
 	p.SetVerifyChecksum(true)
 	return p
+}
+
+func recoverDecoderPanic(err *error) {
+	if v := recover(); v != nil {
+		// Do not include raw binlog data or arbitrary callback panic messages.
+		*err = fmt.Errorf("binlog recovery decoder panic (%T)", v)
+	}
+}
+
+// ParseRecoveryEvent turns malformed decoder panics into instance errors.
+func (p *BinlogParser) ParseRecoveryEvent(data []byte) (event *BinlogEvent, err error) {
+	defer recoverDecoderPanic(&err)
+	return p.Parse(data)
+}
+
+// ParseRecoveryFile contains decoder failures in both validation and the
+// asynchronous replay producer, instead of allowing a process-wide panic.
+func (p *BinlogParser) ParseRecoveryFile(path string, offset int64, onEvent OnEventFunc) (err error) {
+	defer recoverDecoderPanic(&err)
+	return p.ParseFile(path, offset, onEvent)
 }
 
 // FindRecoveryPosition scans transaction boundaries, never file creation time.
@@ -200,7 +227,7 @@ func (b *BinlogSyncer) FindRecoveryPosition(ctx context.Context, timestamp uint3
 			if packet[0] != mysql.OK_HEADER {
 				return mysql.Position{}, fmt.Errorf("unexpected recovery probe packet")
 			}
-			e, err := parser.Parse(packet[1:])
+			e, err := parser.ParseRecoveryEvent(packet[1:])
 			if err != nil {
 				return mysql.Position{}, err
 			}

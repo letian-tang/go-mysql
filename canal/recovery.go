@@ -297,7 +297,7 @@ func (s *localBinFileAdapterStreamer) restartStream(ctx context.Context) (*repli
 		var changed *replication.SourceChangedError
 		var sqlErr *mysql.MyError
 		var transport net.Error
-		transient := errors.As(err, &transport) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+		transient := errors.As(err, &transport) || errors.Is(err, mysql.ErrBadConn) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 		if !transient || errors.As(err, &changed) || errors.As(err, &sqlErr) || s.canal.cfg.DisableRetrySync || (s.canal.cfg.MaxReconnectAttempts > 0 && attempt+1 >= s.canal.cfg.MaxReconnectAttempts) {
 			return nil, err
 		}
@@ -408,7 +408,7 @@ func (s *localBinFileAdapterStreamer) validateArchive(path string) error {
 		}
 		return nil
 	}
-	if err := parser.ParseFile(path, 0, inspect); err != nil {
+	if err := parser.ParseRecoveryFile(path, 0, inspect); err != nil {
 		return fmt.Errorf("validate archive: %w", err)
 	}
 	if open {
@@ -421,7 +421,7 @@ func (s *localBinFileAdapterStreamer) localStreamer(path string, sourceID uint32
 	stream := replication.NewBinlogStreamer()
 	parser := s.canal.GetBinlogSyncer().NewFileParser()
 	go func() {
-		err := parser.ParseFile(path, 0, func(e *replication.BinlogEvent) error {
+		err := parser.ParseRecoveryFile(path, 0, func(e *replication.BinlogEvent) error {
 			e.Header.SourceServerID = sourceID
 			if len(archiveHost) > 0 {
 				e.Header.ArchiveHostInstanceID = archiveHost[0]

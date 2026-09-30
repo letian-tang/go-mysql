@@ -3,9 +3,13 @@ package canal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -220,4 +224,97 @@ func TestRecoveryCompressedCommitUsesEnclosingFilePosition(t *testing.T) {
 	require.NoError(t, c.handleRecoveryEvent(outer))
 	require.Equal(t, uint32(1234), h.cp.Position.Pos)
 	require.Equal(t, map[int32]int32{1: 10}, h.rows)
+}
+
+func TestRecoveryMalformedArchiveReturnsErrorInValidationAndProducer(t *testing.T) {
+	c, h := recoveryCanal(t)
+	b := recoverymock.NewBuilder(11)
+	b.Add(2, 1000, []byte{0})
+	path := filepath.Join(t.TempDir(), "bin.000001")
+	require.NoError(t, os.WriteFile(path, b.Bytes(), 0600))
+	s := &localBinFileAdapterStreamer{canal: c}
+	require.NotPanics(t, func() { require.ErrorContains(t, s.validateArchive(path), "decoder panic") })
+	stream := s.localStreamer(path, 0, "old-host")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	for {
+		_, err := stream.GetEvent(ctx)
+		if err != nil {
+			require.ErrorContains(t, err, "decoder panic")
+			break
+		}
+	}
+	require.Empty(t, h.rows)
+}
+
+func TestRecoveryCloseCancelsBlockedMetadataQuery(t *testing.T) {
+	src, err := recoverymock.New(700, []string{"bin.000001"}, func(recoverymock.Dump) recoverymock.Reply { return recoverymock.Reply{Wait: true} })
+	require.NoError(t, err)
+	defer src.Close()
+	cfg := NewDefaultConfig()
+	cfg.Addr, cfg.User, cfg.Password, cfg.Dump.ExecutionPath = src.Addr, "test", "", ""
+	c, err := NewCanal(cfg)
+	require.NoError(t, err)
+	c.WithRecovery(nil, nil)
+	entered := make(chan struct{})
+	src.SetQueryHook(func(ctx context.Context, query string) error {
+		if strings.Contains(query, "full columns") {
+			close(entered)
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
+	})
+	queryDone := make(chan error, 1)
+	go func() { _, err := c.Execute("SHOW FULL COLUMNS FROM test.recovery"); queryDone <- err }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("metadata query did not enter stall")
+	}
+	closed := make(chan struct{})
+	go func() { c.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close blocked behind metadata query")
+	}
+	require.Error(t, <-queryDone)
+}
+
+type recoveryWriteFailureConn struct{ net.Conn }
+
+func (c recoveryWriteFailureConn) Write([]byte) (int, error) {
+	return 0, errors.New("injected disconnected socket")
+}
+
+func TestRecoveryReconnectRetriesWrappedBadConnection(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("disabled=%v", disabled), func(t *testing.T) {
+			c, _ := recoveryCanal(t)
+			base := c.cfg.Dialer
+			var calls atomic.Int32
+			c.cfg.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				raw, err := base(ctx, network, addr)
+				if err == nil && calls.Add(1) == 1 {
+					return recoveryWriteFailureConn{raw}, nil
+				}
+				return raw, err
+			}
+			c.cfg.DisableRetrySync = disabled
+			c.GetBinlogSyncer().Close()
+			require.NoError(t, c.prepareSyncer())
+			s := &localBinFileAdapterStreamer{canal: c}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_, err := s.restartStream(ctx)
+			if disabled {
+				require.ErrorIs(t, err, mysql.ErrBadConn)
+				require.Equal(t, int32(1), calls.Load())
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, int32(2), calls.Load())
+			}
+		})
+	}
 }

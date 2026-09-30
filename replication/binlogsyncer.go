@@ -527,7 +527,7 @@ func (b *BinlogSyncer) prepare() error {
 	if err := b.enableSemiSync(); err != nil {
 		return errors.Trace(err)
 	}
-	if b.cfg.ManagedRecovery && b.cfg.ReadTimeout == 0 {
+	if b.cfg.ManagedRecovery {
 		_ = b.c.SetDeadline(time.Time{})
 	}
 
@@ -1032,6 +1032,9 @@ func (b *BinlogSyncer) onStream(s *BinlogStreamer) {
 // Returns the parsed BinlogEvent, a boolean indicating if an ACK is needed, and an error if the
 // parsing fails
 func (b *BinlogSyncer) parseEvent(data []byte) (event *BinlogEvent, needACK bool, err error) {
+	if b.cfg.ManagedRecovery {
+		defer recoverDecoderPanic(&err)
+	}
 	// Skip OK byte (0x00)
 	data = data[1:]
 
