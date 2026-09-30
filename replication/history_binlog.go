@@ -46,6 +46,10 @@ type historyProber struct {
 }
 
 func newHistoryProber(cfg BinlogSyncerConfig) (*historyProber, error) {
+	return newHistoryProberContext(context.Background(), cfg)
+}
+
+func newHistoryProberContext(ctx context.Context, cfg BinlogSyncerConfig) (*historyProber, error) {
 	addr := cfg.Host
 	if cfg.Port != 0 {
 		addr = net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port)))
@@ -54,11 +58,11 @@ func newHistoryProber(cfg BinlogSyncerConfig) (*historyProber, error) {
 	// 沿用旧实现的随机 server_id，避免与正在运行的同步连接冲突
 	sid := uint32(rand.New(rand.NewSource(time.Now().Unix())).Intn(1000)) + 1001
 
-	timeoutCtx, cancel := context.WithTimeout(context.Background(), probeConnectTimeout)
+	timeoutCtx, cancel := context.WithTimeout(ctx, probeConnectTimeout)
 	defer cancel()
 
 	c, err := client.ConnectWithDialer(timeoutCtx, "", addr, cfg.User, cfg.Password, "",
-		cfg.Dialer, func(c *client.Conn) error {
+		recoveryDialer(ctx, cfg.Dialer), func(c *client.Conn) error {
 			c.SetTLSConfig(cfg.TLSConfig)
 			c.SetAttributes(map[string]string{"_client_role": "binary_log_listener"})
 			c.ReadTimeout = probeReadTimeout

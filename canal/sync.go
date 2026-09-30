@@ -2,6 +2,7 @@ package canal
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -21,15 +22,15 @@ func (c *Canal) startSyncer() (*replication.BinlogStreamer, error) {
 	gset := c.master.GTIDSet()
 	if gset == nil || gset.String() == "" {
 		pos := c.master.Position()
-		s, err := c.syncer.StartSync(pos)
+		s, err := c.GetBinlogSyncer().StartSync(pos)
 		if err != nil {
-			return nil, errors.Errorf("start sync replication at binlog %v error %v", pos, err)
+			return nil, fmt.Errorf("start sync replication at binlog %v: %w", pos, err)
 		}
 		c.cfg.Logger.Info("start sync binlog at binlog file", slog.Any("pos", pos))
 		return s, nil
 	}
 	gsetClone := gset.Clone()
-	s, err := c.syncer.StartSyncGTID(gset)
+	s, err := c.GetBinlogSyncer().StartSyncGTID(gset)
 	if err != nil {
 		return nil, errors.Errorf("start sync replication at GTID set %v error %v", gset, err)
 	}
@@ -38,7 +39,13 @@ func (c *Canal) startSyncer() (*replication.BinlogStreamer, error) {
 }
 
 func (c *Canal) runSyncBinlog() error {
-	s, err := c.adaptLocalBinFileStreamer(c.startSyncer())
+	var s *localBinFileAdapterStreamer
+	var err error
+	if c.managedRecovery && c.recoveryCheckpoint.ArchiveHostInstanceID != "" {
+		s, err = c.adaptLocalBinFileStreamer(nil, nil)
+	} else {
+		s, err = c.adaptLocalBinFileStreamer(c.startSyncer())
+	}
 	if err != nil {
 		return err
 	}
@@ -49,7 +56,7 @@ func (c *Canal) runSyncBinlog() error {
 			return errors.Trace(err)
 		}
 		if _, ok := ev.Event.(*replication.FailoverBoundaryEvent); ok {
-			c.beginFailoverRecovery()
+			c.GetBinlogSyncer().FailOverFinish()
 			continue
 		}
 
@@ -75,7 +82,11 @@ func (c *Canal) runSyncBinlog() error {
 			}
 		}
 
-		err = c.handleEvent(ev)
+		if c.managedRecovery {
+			err = c.handleRecoveryEvent(ev)
+		} else {
+			err = c.handleEvent(ev)
+		}
 		if err != nil {
 			return err
 		}
@@ -273,9 +284,6 @@ func (c *Canal) updateReplicationDelay(ev *replication.BinlogEvent) {
 }
 
 func (c *Canal) handleRowsEvent(e *replication.BinlogEvent) error {
-	if c.shouldSkipFailoverRow(e.Header.Timestamp) {
-		return nil
-	}
 	ev := e.Event.(*replication.RowsEvent)
 
 	// Caveat: table may be altered at runtime.
@@ -308,27 +316,6 @@ func (c *Canal) handleRowsEvent(e *replication.BinlogEvent) error {
 	}
 	events := newRowsEvent(t, action, ev.Rows, e.Header)
 	return c.eventHandler.OnRow(events)
-}
-
-func (c *Canal) beginFailoverRecovery() {
-	c.failoverCutoffTimestamp = c.master.Timestamp()
-	if c.failoverCutoffTimestamp == 0 {
-		c.syncer.FailOverFinish()
-	}
-}
-
-func (c *Canal) shouldSkipFailoverRow(timestamp uint32) bool {
-	if c.failoverCutoffTimestamp == 0 {
-		return false
-	}
-	// 新主库会回拨一段时间；只跳过切换边界之后重放的重叠事件。
-	if timestamp < c.failoverCutoffTimestamp {
-		return true
-	}
-	// 到达旧主库已处理的时间线，结束回拨过滤。
-	c.failoverCutoffTimestamp = 0
-	c.syncer.FailOverFinish()
-	return false
 }
 
 func (c *Canal) FlushBinlog() error {

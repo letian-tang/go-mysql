@@ -57,7 +57,9 @@ type BinlogSyncerConfig struct {
 	// EmitFailoverBoundary emits an internal ordering marker after reconnecting
 	// to a different server. Canal uses it to separate buffered old-primary
 	// events from replayed new-primary events.
-	EmitFailoverBoundary bool
+	EmitFailoverBoundary   bool
+	ManagedRecovery        bool
+	ExpectedSourceServerID uint32
 
 	// RawModeEnabled is for not parsing binlog event.
 	RawModeEnabled bool
@@ -268,6 +270,7 @@ func NewBinlogSyncer(cfg BinlogSyncerConfig) *BinlogSyncer {
 	b.parser.SetRowsEventDecodeFunc(b.cfg.RowsEventDecodeFunc)
 	b.parser.SetTableMapOptionalMetaDecodeFunc(b.cfg.TableMapOptionalMetaDecodeFunc)
 	b.running = false
+	b.ServerId = int64(cfg.ExpectedSourceServerID)
 	b.ctx, b.cancel = context.WithCancel(context.Background())
 
 	return b
@@ -275,6 +278,11 @@ func NewBinlogSyncer(cfg BinlogSyncerConfig) *BinlogSyncer {
 
 // Close closes the BinlogSyncer.
 func (b *BinlogSyncer) Close() {
+	// Managed handshakes may own m while blocked in I/O. Cancellation must
+	// reach the transport before waiting for that mutex.
+	if b.cfg.ManagedRecovery {
+		b.cancel()
+	}
 	b.m.Lock()
 	defer b.m.Unlock()
 
@@ -282,7 +290,7 @@ func (b *BinlogSyncer) Close() {
 }
 
 func (b *BinlogSyncer) close() {
-	if b.isClosed() {
+	if b.isClosed() && !b.cfg.ManagedRecovery {
 		return
 	}
 
@@ -307,7 +315,7 @@ func (b *BinlogSyncer) close() {
 	}
 
 	// kill last connection id
-	if b.lastConnectionID > 0 {
+	if b.lastConnectionID > 0 && !b.cfg.ManagedRecovery {
 		// Use a new connection to kill the binlog syncer
 		// because calling KILL from the same connection
 		// doesn't actually disconnect it.
@@ -403,7 +411,10 @@ func (b *BinlogSyncer) registerSlave() error {
 	if r, err := b.c.Execute("SHOW VARIABLES LIKE 'server_id'"); err != nil {
 		return errors.Trace(err)
 	} else {
-		serviceId, _ := r.GetInt(0, 1)
+		serviceId, sidErr := r.GetInt(0, 1)
+		if b.cfg.ManagedRecovery && (sidErr != nil || serviceId <= 0 || serviceId > int64(^uint32(0))) {
+			return fmt.Errorf("invalid physical source server_id")
+		}
 		// 启动或重启
 		if b.ServerId == 0 {
 			b.ServerId = serviceId
@@ -515,6 +526,9 @@ func (b *BinlogSyncer) prepare() error {
 
 	if err := b.enableSemiSync(); err != nil {
 		return errors.Trace(err)
+	}
+	if b.cfg.ManagedRecovery && b.cfg.ReadTimeout == 0 {
+		_ = b.c.SetDeadline(time.Time{})
 	}
 
 	b.cfg.Logger.Info("Connected to server", slog.String("flavor", b.cfg.Flavor), slog.String("version", b.c.GetServerVersion()))
@@ -818,6 +832,9 @@ func (b *BinlogSyncer) prepareSyncPos(pos mysql.Position) error {
 	}
 
 	// 主备切换
+	if b.cfg.ManagedRecovery && b.Failover {
+		return &SourceChangedError{Current: uint32(b.ServerId)}
+	}
 	if b.Failover {
 		masterPos, err := b.getMasterPos()
 		masterPos.Pos = 4
@@ -903,6 +920,10 @@ func (b *BinlogSyncer) onStream(s *BinlogStreamer) {
 
 		if err != nil {
 			b.cfg.Logger.Error(err.Error())
+			if b.cfg.ManagedRecovery {
+				s.closeWithError(&ReconnectRequiredError{Cause: err})
+				return
+			}
 			// we meet connection error, should re-connect again with
 			// last nextPos or nextGTID we got.
 			if len(b.nextPos.Name) == 0 && b.prevGset == nil {
@@ -1032,6 +1053,7 @@ func (b *BinlogSyncer) parseEvent(data []byte) (event *BinlogEvent, needACK bool
 
 // handleEventAndACK processes an event and sends an ACK if necessary.
 func (b *BinlogSyncer) handleEventAndACK(s *BinlogStreamer, e *BinlogEvent, needACK bool) error {
+	e.Header.SourceServerID = uint32(b.ServerId)
 	// Update the next position based on the event's LogPos
 	if e.Header.LogPos > 0 {
 		// Some events like FormatDescriptionEvent return 0, ignore.
@@ -1198,8 +1220,12 @@ func (b *BinlogSyncer) newConnection(ctx context.Context) (*client.Conn, error) 
 	timeoutCtx, cancel := context.WithTimeout(ctx, time.Second*10)
 	defer cancel()
 
+	dialer := b.cfg.Dialer
+	if b.cfg.ManagedRecovery {
+		dialer = recoveryDialer(ctx, b.cfg.Dialer)
+	}
 	return client.ConnectWithDialer(timeoutCtx, "", addr, b.cfg.User, b.cfg.Password,
-		"", b.cfg.Dialer, func(c *client.Conn) error {
+		"", dialer, func(c *client.Conn) error {
 			c.SetTLSConfig(b.cfg.TLSConfig)
 			c.SetAttributes(map[string]string{"_client_role": "binary_log_listener"})
 			if b.cfg.ReadTimeout > 0 {

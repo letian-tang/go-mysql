@@ -58,6 +58,7 @@ type Canal struct {
 	dumped     bool
 	dumpDoneCh chan struct{}
 	syncer     *replication.BinlogSyncer
+	syncerMu   sync.RWMutex
 
 	eventHandler EventHandler
 
@@ -74,14 +75,15 @@ type Canal struct {
 
 	delay atomic.Uint32
 
-	// failoverCutoffTimestamp is captured after all events buffered from the
-	// old primary have been handled. Earlier rows replayed from the new primary
-	// are recovery overlap and are skipped.
-	failoverCutoffTimestamp uint32
-
-	ctx               context.Context
-	cancel            context.CancelFunc
-	binFileDownloader BinlogFileDownloader
+	ctx                    context.Context
+	cancel                 context.CancelFunc
+	binFileDownloader      BinlogFileDownloader
+	recoveryProvider       RecoveryFileProvider
+	recoveryBarrier        RecoveryBarrier
+	recoveryCheckpoint     RecoveryCheckpoint
+	expectedSourceServerID uint32
+	managedRecovery        bool
+	pendingTransaction     []*replication.BinlogEvent
 }
 
 // canal will retry fetching unknown table's meta after UnknownTableRetryPeriod
@@ -258,7 +260,9 @@ func (c *Canal) run() error {
 		c.cancel()
 	}()
 
-	c.master.UpdateTimestamp(uint32(utils.Now().Unix()))
+	if !c.managedRecovery {
+		c.master.UpdateTimestamp(uint32(utils.Now().Unix()))
+	}
 
 	if !c.dumped {
 		c.dumped = true
@@ -285,11 +289,11 @@ func (c *Canal) run() error {
 
 func (c *Canal) Close() {
 	c.cfg.Logger.Info("closing canal")
+	c.cancel()
+	c.GetBinlogSyncer().Close()
 	c.m.Lock()
 	defer c.m.Unlock()
 
-	c.cancel()
-	c.syncer.Close()
 	c.connLock.Lock()
 	if c.conn != nil {
 		c.conn.Close()
@@ -297,7 +301,9 @@ func (c *Canal) Close() {
 	}
 	c.connLock.Unlock()
 
-	_ = c.eventHandler.OnPosSynced(nil, c.master.Position(), c.master.GTIDSet(), true)
+	if !c.managedRecovery {
+		_ = c.eventHandler.OnPosSynced(nil, c.master.Position(), c.master.GTIDSet(), true)
+	}
 }
 
 func (c *Canal) WaitDumpDone() <-chan struct{} {
@@ -488,6 +494,8 @@ func (c *Canal) CheckBinlogRowImage(image string) error {
 }
 
 func (c *Canal) GetBinlogSyncer() *replication.BinlogSyncer {
+	c.syncerMu.RLock()
+	defer c.syncerMu.RUnlock()
 	return c.syncer
 }
 
@@ -515,6 +523,8 @@ func (c *Canal) prepareSyncer() error {
 		ParseTime:               c.cfg.ParseTime,
 		SemiSyncEnabled:         c.cfg.SemiSyncEnabled,
 		EmitFailoverBoundary:    true,
+		ManagedRecovery:         c.managedRecovery,
+		ExpectedSourceServerID:  c.expectedSourceServerID,
 		MaxReconnectAttempts:    c.cfg.MaxReconnectAttempts,
 		DisableRetrySync:        c.cfg.DisableRetrySync,
 		TimestampStringLocation: c.cfg.TimestampStringLocation,
@@ -556,7 +566,15 @@ func (c *Canal) prepareSyncer() error {
 		cfg.Port = uint16(portNumber)
 	}
 
-	c.syncer = replication.NewBinlogSyncer(cfg)
+	next := replication.NewBinlogSyncer(cfg)
+	c.syncerMu.Lock()
+	if c.ctx.Err() != nil {
+		c.syncerMu.Unlock()
+		next.Close()
+		return c.ctx.Err()
+	}
+	c.syncer = next
+	c.syncerMu.Unlock()
 
 	return nil
 }

@@ -71,12 +71,17 @@ func (e *EventError) Error() string {
 }
 
 type EventHeader struct {
-	Timestamp uint32
-	EventType EventType
-	ServerID  uint32
-	EventSize uint32
-	LogPos    uint32
-	Flags     uint16
+	// SourceServerID identifies the connection producing this event, not its
+	// original writer. It is metadata and is not part of the wire header.
+	SourceServerID uint32
+	// ArchiveHostInstanceID identifies file replay, never a physical server_id.
+	ArchiveHostInstanceID string
+	Timestamp             uint32
+	EventType             EventType
+	ServerID              uint32
+	EventSize             uint32
+	LogPos                uint32
+	Flags                 uint16
 }
 
 func (h *EventHeader) Decode(data []byte) error {

@@ -24,7 +24,13 @@ func (c *Canal) adaptLocalBinFileStreamer(remoteBinlogStreamer *replication.Binl
 		syncMasterStreamer: remoteBinlogStreamer,
 		canal:              c,
 		binFileDownloader:  c.binFileDownloader,
-	}, err
+		startErr:           err,
+	}, func() error {
+		if c.managedRecovery {
+			return nil
+		}
+		return err
+	}()
 }
 
 // localBinFileAdapterStreamer will support to download flushed binlog file for continuous sync in cloud computing platform
@@ -33,10 +39,16 @@ type localBinFileAdapterStreamer struct {
 	syncMasterStreamer          *replication.BinlogStreamer // syncMasterStreamer is the streamer from canal startSyncer
 	canal                       *Canal
 	binFileDownloader           BinlogFileDownloader
+	startErr                    error
+	archive                     *RecoveryFile
+	archiveNext                 string
 }
 
 // GetEvent will auto switch the local and remote streamer to get binlog event if possible.
 func (s *localBinFileAdapterStreamer) GetEvent(ctx context.Context) (*replication.BinlogEvent, error) {
+	if s.canal.managedRecovery {
+		return s.managedEvent(ctx)
+	}
 	if s.binFileDownloader == nil { // not support to use local bin file
 		return s.BinlogStreamer.GetEvent(ctx)
 	}
